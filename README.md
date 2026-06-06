@@ -111,10 +111,11 @@ nix flake init -t github:JPHutchins/crane-tauri
   differ, or the build fails at the install step with `failed to locate built
   binary`
 - to add system dependencies, pass `extraNativeBuildInputs` / `extraBuildInputs`
-  (or plain `nativeBuildInputs` / `buildInputs` — both are merged with the
-  Tauri defaults and `pkg-config`)
-- `--features tauri/custom-protocol` is always injected (required for Tauri v2
-  release builds); your `cargoExtraArgs` is appended to it, not substituted
+  (appended to `pkg-config` and the Tauri system libraries); other crane /
+  `mkDerivation` args go via `craneArgs`
+- `tauri/custom-protocol` is injected by default (required for Tauri v2 release
+  builds); override the feature set via `tauriFeatures`, and your
+  `cargoExtraArgs` is appended
 
 For a more complete example with checks, see [templates/default/flake.nix](./templates/default/flake.nix).
 
