@@ -3,13 +3,10 @@
   craneLib,
 }:
 
-# RFC prototype: the build arguments are a *module* rather than a bare attrset.
-# A plain attrset (`{ pname = ...; ... }`) is a valid module, so the common call
-# site is unchanged — it is just type-checked now. A function
-# (`{ config, ... }: { ... }`) or a list of modules also works, for composition.
-#
-# Build logic below is identical to the published version; only the argument
-# layer changed, so the produced derivation is byte-identical (drvPath verified).
+# Build arguments are a module: a plain attrset (`{ pname = ...; ... }`) is the
+# common form, but a function (`{ config, ... }: { ... }`) or a list of modules
+# also works. Arguments are type-checked and unknown attributes are rejected;
+# arbitrary crane / mkDerivation args go through `craneArgs`.
 args:
 
 let
@@ -30,7 +27,7 @@ let
         };
         src = mkOption {
           type = types.path;
-          description = "Repo root containing src-tauri/.";
+          description = "Repo root containing src-tauri/ (a path or store derivation).";
         };
         frontend = mkOption {
           type = types.package;
@@ -43,7 +40,8 @@ let
           description = ''
             Cargo binary name to install from target/release. Defaults to pname,
             but the on-disk binary is named by cargo ([package].name in
-            src-tauri/Cargo.toml); set this when they differ.
+            src-tauri/Cargo.toml); set this when they differ, or the install
+            phase fails late with "failed to locate built binary".
           '';
         };
         cargoExtraArgs = mkOption {
@@ -64,43 +62,66 @@ let
         extraBuildInputs = mkOption {
           type = types.listOf types.package;
           default = [ ];
+          description = "Extra buildInputs, appended to the Tauri system libraries.";
         };
         extraNativeBuildInputs = mkOption {
           type = types.listOf types.package;
           default = [ ];
+          description = "Extra nativeBuildInputs, appended to pkg-config.";
+        };
+        tauriFeatures = mkOption {
+          type = types.listOf types.str;
+          default = [ "tauri/custom-protocol" ];
+          description = ''
+            Cargo features passed via --features. Defaults to the custom-protocol
+            feature Tauri v2 release builds require; set to [ ] to omit the flag
+            entirely (e.g. when features are driven from Cargo.toml).
+          '';
         };
         extraTauriConfig = mkOption {
           type = types.attrs;
           default = { };
-          description = "Extra tauri.conf.json keys, merged over the managed config.";
+          description = ''
+            Extra tauri.conf.json keys, deep-merged with the managed config. The
+            managed build.frontendDist (the `frontend` derivation) and
+            build.beforeBuildCommand WIN over values set here, so the embedded
+            assets always track `frontend`; all other keys are caller-controlled.
+          '';
         };
         cargoRoot = mkOption {
           type = types.nullOr types.path;
           default = null;
-          description = "Closest common ancestor of src-tauri/ and sibling path-dep crates.";
+          description = ''
+            Closest common ancestor of src-tauri/ and any sibling path-dep crates.
+            Defaults to src-tauri/. Must share the same on-disk root as src.
+          '';
         };
         extraFileset = mkOption {
           # filesets are an opaque lib value; `raw` stores it without inspection.
           type = types.nullOr types.raw;
           default = null;
-          description = "Extra app-only sources (non-.rs/.toml) needed at compile time.";
+          description = ''
+            Extra app-only sources the app needs at compile time (SQL migrations,
+            JSON fixtures). Must be non-.rs and non-.toml: crane already keeps all
+            .toml in both sources, so a .toml here is redundant and still busts
+            the deps cache on edit.
+          '';
         };
         craneArgs = mkOption {
           type = types.attrsOf types.anything;
           default = { };
           description = ''
-            Typed escape hatch for arbitrary crane / mkDerivation args (doCheck,
-            env vars, hooks, ...). Replaces the old `...`@origArgs + removeAttrs
-            passthrough, so a typo at the top level is rejected by the module
-            checker instead of silently leaking into the derivation.
+            Escape hatch for arbitrary crane / mkDerivation args (doCheck, env
+            vars, hooks, ...). Use this rather than passing such args at the top
+            level, which the module checker rejects as unknown options.
           '';
         };
       };
     };
 
   # _module.check defaults to true: an unknown top-level attribute (e.g. a typo
-  # like `pnmae` or `verison`) is rejected with a clear error, and a wrong type
-  # (e.g. `version = 1`) fails with the option path and expected type.
+  # like `pnmae`) is rejected with a clear error, and a wrong type (e.g.
+  # `version = 1`) fails with the option path and expected type.
   cfg =
     (lib.evalModules {
       modules = [ optionsModule ] ++ lib.toList args;
@@ -116,6 +137,7 @@ let
     cargoArtifacts
     extraBuildInputs
     extraNativeBuildInputs
+    tauriFeatures
     extraTauriConfig
     cargoRoot
     extraFileset
@@ -125,6 +147,12 @@ let
   actualCargoRoot = if cargoRoot != null then cargoRoot else tauriSrc;
   isMonorepo = toString actualCargoRoot != toString tauriSrc;
 
+  # Path of the tauri crate relative to cargoRoot. Throws if cargoRoot isn't an
+  # ancestor of ${src}/src-tauri — otherwise lib.removePrefix would silently
+  # return the full absolute path and the build would fail confusingly. The
+  # compared strings are toString-evaluated absolute paths, so src and cargoRoot
+  # must share the same on-disk root (both local or both from the same store
+  # derivation).
   tauriSubdir =
     if !isMonorepo then
       "."
@@ -166,26 +194,24 @@ let
     );
   };
 
-  tauriBuildInputs =
-    with pkgs;
-    [
-      openssl
-    ]
-    ++ lib.optionals stdenv.hostPlatform.isLinux [
-      webkitgtk_4_1
-      libsoup_3
-      gtk3
-      glib
-      cairo
-      pango
-      gdk-pixbuf
-      atk
-      librsvg
-      libayatana-appindicator
-    ]
-    ++ lib.optionals stdenv.hostPlatform.isDarwin [
-      libiconv
-    ];
+  tauriBuildInputs = [
+    pkgs.openssl
+  ]
+  ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+    pkgs.webkitgtk_4_1
+    pkgs.libsoup_3
+    pkgs.gtk3
+    pkgs.glib
+    pkgs.cairo
+    pkgs.pango
+    pkgs.gdk-pixbuf
+    pkgs.atk
+    pkgs.librsvg
+    pkgs.libayatana-appindicator
+  ]
+  ++ lib.optionals pkgs.stdenv.hostPlatform.isDarwin [
+    pkgs.libiconv
+  ];
 
   relocateCachedTauriPaths = ''
     derivationName="''${name:-${pname}}"
@@ -225,30 +251,47 @@ let
     log_relocation "derivation=$derivationName summary files=$relocationFiles matches=$relocationMatches rewrites=$relocationRewrites"
   '';
 
+  # `cargo tauri build` rejects --manifest-path (it discovers src-tauri/ from
+  # CWD), but every other cargo command run from cargoRoot in monorepo mode needs
+  # it. So we carry two flavors of extra args. If the caller already supplied
+  # --manifest-path via cargoExtraArgs we skip injection.
   callerSetManifestPath = lib.hasInfix "--manifest-path" cargoExtraArgs;
+
+  # escapeShellArg the path so a space/metachar in an intermediate directory
+  # survives crane's unquoted interpolation. It is a no-op for an ordinary
+  # src-tauri/Cargo.toml, so the emitted string is unchanged for the common case.
   manifestPathArg = lib.optionalString (
     isMonorepo && !callerSetManifestPath
-  ) "--manifest-path ${tauriSubdir}/Cargo.toml";
+  ) "--manifest-path ${lib.escapeShellArg "${tauriSubdir}/Cargo.toml"}";
 
-  tauriBuildCargoExtraArgs = lib.concatStringsSep " " (
-    lib.filter (s: s != "") [
-      "--features tauri/custom-protocol"
-      cargoExtraArgs
-    ]
-  );
+  tauriFeaturesArg = lib.optionalString (
+    tauriFeatures != [ ]
+  ) "--features ${lib.concatStringsSep "," tauriFeatures}";
 
-  sharedCargoExtraArgs = lib.concatStringsSep " " (
-    lib.filter (s: s != "") [
-      "--features tauri/custom-protocol"
-      cargoExtraArgs
-      manifestPathArg
-    ]
-  );
+  joinArgs = parts: lib.concatStringsSep " " (lib.filter (s: s != "") parts);
 
+  # The two flavors differ only by the injected --manifest-path.
+  baseCargoExtraArgs = [
+    tauriFeaturesArg
+    cargoExtraArgs
+  ];
+
+  tauriBuildCargoExtraArgs = joinArgs baseCargoExtraArgs;
+
+  sharedCargoExtraArgs = joinArgs (baseCargoExtraArgs ++ [ manifestPathArg ]);
+
+  # Pin crane's vendoring to the tauri crate's own Cargo.lock when one exists
+  # there (the "loose path-deps" layout). In a true cargo workspace only the
+  # workspace root has a Cargo.lock, so we leave crane on its default. A
+  # caller-supplied cargoLock always wins — see sharedArgs.
   monorepoCargoLock = lib.optionalAttrs (
     isMonorepo && builtins.pathExists (tauriSrc + "/Cargo.lock")
   ) { cargoLock = tauriSrc + "/Cargo.lock"; };
 
+  # `cargo tauri build` chdirs into ${tauriSubdir}, so a relative
+  # CARGO_TARGET_DIR would resolve differently in the deps build (CWD =
+  # cargoRoot) and the app build, breaking every cached fingerprint. Pin an
+  # absolute target dir so both builds share one target/ tree.
   exportAbsoluteCargoTargetDir = lib.optionalString isMonorepo ''
     export CARGO_TARGET_DIR="$PWD/target"
   '';
@@ -262,8 +305,12 @@ let
       inherit pname version;
       strictDeps = true;
       cargoExtraArgs = sharedCargoExtraArgs;
-      nativeBuildInputs = [ pkgs.pkg-config ] ++ extraNativeBuildInputs;
-      buildInputs = tauriBuildInputs ++ extraBuildInputs;
+      nativeBuildInputs = [
+        pkgs.pkg-config
+      ]
+      ++ (cfg.craneArgs.nativeBuildInputs or [ ])
+      ++ extraNativeBuildInputs;
+      buildInputs = tauriBuildInputs ++ (cfg.craneArgs.buildInputs or [ ]) ++ extraBuildInputs;
       preConfigure = lib.concatStringsSep "\n" [
         exportAbsoluteCargoTargetDir
         (cfg.craneArgs.preConfigure or "")
@@ -282,12 +329,12 @@ let
       craneLib.buildDepsOnly (sharedArgs // { src = depsSrc; });
 
   tauriConfig = builtins.toJSON (
-    lib.recursiveUpdate {
+    lib.recursiveUpdate extraTauriConfig {
       build = {
         frontendDist = "${frontend}";
         beforeBuildCommand = "";
       };
-    } extraTauriConfig
+    }
   );
 
   app = craneLib.mkCargoDerivation (
@@ -326,6 +373,10 @@ in
     frontend
     commonArgs
     tauriConfig
+    # Path of the tauri crate relative to cargoRoot ("." outside monorepo mode).
+    # Exposed so consumers can target the tauri crate from cargoRoot. cargo-deny
+    # runs as `cargo deny check` and finds the manifest from CWD, so it wants
+    # cargoExtraArgs = "" (the top-level `cargo` rejects --features/--manifest-path).
     tauriSubdir
     ;
   cargoArtifacts = resolvedCargoArtifacts;
