@@ -47,18 +47,6 @@ commit_all() {
   git -c user.name=test -c user.email=test@test commit -qm "$1"
 }
 
-assert_log_contains() {
-  local pattern="$1"
-  local log_file="$2"
-  local description="$3"
-
-  if grep -Eq "$pattern" "$log_file"; then
-    pass "$description"
-  else
-    fail "$description"
-  fi
-}
-
 assert_log_lacks() {
   local pattern="$1"
   local log_file="$2"
@@ -77,7 +65,7 @@ test -x "$app_out/bin/tauri-app" || fail "binary not found or not executable"
 pass "fixture binary builds"
 
 echo "=== Test 2: Frontend assets embedded ==="
-grep -qc "vite.svg" "$app_out/bin/tauri-app" || fail "frontend not embedded in binary"
+grep -qaF "vite.svg" "$app_out/bin/tauri-app" || fail "frontend not embedded in binary"
 pass "frontend assets are embedded"
 
 echo "=== Test 3: Frontend builds independently ==="
@@ -98,6 +86,7 @@ BUILD2_LOG="$LOG_DIR/build-source-change.log"
 BUILD3_LOG="$LOG_DIR/build-manifest-change.log"
 BUILD4_LOG="$LOG_DIR/build-monorepo.log"
 BUILD5_LOG="$LOG_DIR/build-monorepo-sibling-change.log"
+BUILD6_LOG="$LOG_DIR/build-extrafileset-change.log"
 
 for path in flake.nix lib templates; do
   cp -r "$REPO_ROOT/$path" "$LIB_SNAPSHOT/$path"
@@ -204,7 +193,7 @@ capture_verbose "$BUILD1_LOG" nix build "${NIX_BUILD_ARGS[@]}" .#default
 
 consumer_out=$(run_verbose nix path-info .#default)
 test -x "$consumer_out/bin/tauri-app" || fail "consumer binary not found"
-grep -qc "vite.svg" "$consumer_out/bin/tauri-app" || fail "consumer frontend not embedded"
+grep -qaF "vite.svg" "$consumer_out/bin/tauri-app" || fail "consumer frontend not embedded"
 pass "fresh consumer project builds with embedded frontend"
 
 app_out_before="$consumer_out"
@@ -254,6 +243,20 @@ else
   fail "cargoArtifacts did not change after Cargo manifest modification"
 fi
 
+# Anchor the crane "-deps" naming convention that the assert_log_lacks oracle in
+# Tests 5/8/9 depends on. Read straight from the derivation name (not a build
+# log, which is cache-dependent — a warm local or remote cache serves the deps
+# with no "building" line), so if crane ever renames the deps derivation this
+# fails loudly and the assert_log_lacks pattern gets fixed instead of silently
+# rotting into a vacuous pass.
+deps_drv_name=$(basename "$(nix eval --raw ".#packages.$SYSTEM.cargoArtifacts.drvPath")")
+case "$deps_drv_name" in
+*-tauri-app-deps-0.1.0.drv)
+  pass "deps derivation name '$deps_drv_name' matches the assert_log_lacks pattern" ;;
+*)
+  fail "deps derivation name '$deps_drv_name' no longer matches 'tauri-app-deps-0.1.0.drv' — update the assert_log_lacks pattern" ;;
+esac
+
 echo "=== Test 7: Monorepo mode with sibling path-dep crate ==="
 
 echo "  Creating sibling crate..."
@@ -276,9 +279,14 @@ printf '\nsibling-crate = { path = "../sibling-crate" }\n' >> src-tauri/Cargo.to
 
 echo "  Rewriting src-tauri/src/lib.rs to call the sibling..."
 cat > src-tauri/src/lib.rs << 'EOF'
+// Pulled in from migrations/ via extraFileset (a *.sql file crane's
+// commonCargoSources does not capture). include_str! makes a broken extraFileset
+// fail at compile time, and embeds the marker into the binary for the test grep.
+const MIGRATION: &str = include_str!("../../migrations/0001_init.sql");
+
 #[tauri::command]
 fn greet(name: &str) -> String {
-    sibling_crate::greeting(name)
+    format!("{} {}", MIGRATION.trim(), sibling_crate::greeting(name))
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -296,10 +304,15 @@ awk '
   /^name = "tauri-app"$/ { in_tauri_app = 1 }
   in_tauri_app && /^ "tauri",$/ {
     print " \"sibling-crate\","
+    inserted = 1
     in_tauri_app = 0
   }
   { print }
   END {
+    if (!inserted) {
+      print "ERROR: did not patch tauri-app deps array (Cargo.lock format drift?)" > "/dev/stderr"
+      exit 1
+    }
     print ""
     print "[[package]]"
     print "name = \"sibling-crate\""
@@ -308,19 +321,20 @@ awk '
 ' src-tauri/Cargo.lock > src-tauri/Cargo.lock.new
 mv src-tauri/Cargo.lock.new src-tauri/Cargo.lock
 
-echo "  Adding deny.toml at root for extraFileset..."
-cat > deny.toml << 'EOF'
-# Smoke-test file for extraFileset wiring.
-[graph]
-all-features = true
-EOF
+echo "  Adding a non-cargo file consumed via include_str! to exercise extraFileset..."
+# A *.sql file is NOT captured by crane's commonCargoSources (unlike *.rs and
+# *.toml), so it reaches the app build ONLY through extraFileset. Because lib.rs
+# include_str!s it, a broken/ignored extraFileset becomes a hard compile error
+# rather than a silently-passing build.
+mkdir -p migrations
+printf 'EXTRA_FILESET_MARKER\n' > migrations/0001_init.sql
 
 echo "  Updating flake.nix to set cargoRoot and extraFileset..."
 awk '
   /src = \.\/\.;/ && !done {
     print
     print "          cargoRoot = ./.;"
-    print "          extraFileset = ./deny.toml;"
+    print "          extraFileset = ./migrations;"
     done = 1
     next
   }
@@ -337,9 +351,13 @@ monorepo_out=$(run_verbose nix path-info .#default)
 test -x "$monorepo_out/bin/tauri-app" || fail "monorepo binary not found"
 pass "monorepo build with sibling path-dep produces an executable binary"
 
-grep -qc "MONOREPO_SIBLING_MARKER" "$monorepo_out/bin/tauri-app" \
+grep -qaF "MONOREPO_SIBLING_MARKER" "$monorepo_out/bin/tauri-app" \
   || fail "sibling-crate marker string not found in binary — sibling not linked?"
 pass "sibling-crate compiled and linked into the tauri binary"
+
+grep -qaF "EXTRA_FILESET_MARKER" "$monorepo_out/bin/tauri-app" \
+  || fail "extraFileset file not embedded — migrations/ did not reach the app build?"
+pass "extraFileset file reached the app build (include_str! marker embedded)"
 
 deps_hash_monorepo=$(cargo_artifacts_out_path)
 
@@ -363,9 +381,33 @@ fi
 assert_log_lacks 'tauri-app-deps-0\.1\.0\.drv' "$BUILD5_LOG" "deps derivation not rebuilt after sibling .rs change"
 
 monorepo_out_after_sibling=$(run_verbose nix path-info .#default)
-grep -qc "MONOREPO_SIBLING_MARKER_v2" "$monorepo_out_after_sibling/bin/tauri-app" \
+grep -qaF "MONOREPO_SIBLING_MARKER_v2" "$monorepo_out_after_sibling/bin/tauri-app" \
   || fail "updated sibling marker not found in rebuilt binary"
 pass "rebuilt binary picks up the sibling source edit"
+
+echo "=== Test 9: extraFileset content edits don't bust the deps cache ==="
+
+echo "  Modifying the extraFileset file (migrations/0001_init.sql)..."
+replace_in_file 's/EXTRA_FILESET_MARKER/EXTRA_FILESET_MARKER_v2/' migrations/0001_init.sql
+commit_all "modify extraFileset migration"
+
+echo "  Rebuilding after extraFileset content change..."
+capture_verbose "$BUILD6_LOG" nix build "${NIX_BUILD_ARGS[@]}" .#default
+
+deps_hash_after_extrafileset=$(cargo_artifacts_out_path)
+
+if [ "$deps_hash_after_sibling" = "$deps_hash_after_extrafileset" ]; then
+  pass "cargoArtifacts unchanged after extraFileset content edit ($deps_hash_after_extrafileset)"
+else
+  fail "cargoArtifacts changed on extraFileset edit: before=$deps_hash_after_sibling after=$deps_hash_after_extrafileset"
+fi
+
+assert_log_lacks 'tauri-app-deps-0\.1\.0\.drv' "$BUILD6_LOG" "deps derivation not rebuilt after extraFileset content edit"
+
+extrafileset_out=$(run_verbose nix path-info .#default)
+grep -qaF "EXTRA_FILESET_MARKER_v2" "$extrafileset_out/bin/tauri-app" \
+  || fail "updated extraFileset marker not found in rebuilt binary"
+pass "rebuilt binary picks up the extraFileset content edit"
 
 echo ""
 echo "=== All integration tests passed ==="
