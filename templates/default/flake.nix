@@ -4,11 +4,9 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     crane.url = "github:ipetkov/crane";
-    crane-tauri.url = "github:jphutchins/crane-tauri";
-    crane-tauri.inputs = {
-      nixpkgs.follows = "nixpkgs";
-      crane.follows = "crane";
-    };
+    # crane-tauri declares no inputs of its own, so there is nothing to follow
+    # or override (the previous follows clause warned about non-existent inputs).
+    crane-tauri.url = "github:JPHutchins/crane-tauri";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
