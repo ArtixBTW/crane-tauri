@@ -12,7 +12,7 @@ Build Tauri apps with Nix while reusing `crane` for Cargo dependency caching.
 If you just want a starter project, use the template:
 
 ```bash
-nix flake init -t github:jphutchins/crane-tauri
+nix flake init -t github:JPHutchins/crane-tauri
 ```
 
 ## Minimal Example
@@ -104,6 +104,17 @@ nix flake init -t github:jphutchins/crane-tauri
 - `frontend` should be the built web assets, not the source tree
 - `tauri.app` is the final binary package
 - `tauri.cargoArtifacts` is the reusable crane dependency cache derivation
+- `tauri.commonArgs`, `tauri.tauriConfig`, and `tauri.tauriSubdir` are exposed
+  for composing extra checks (clippy, deny) against the same source and config
+- `binaryName` defaults to `pname`, but the installed binary is named by cargo
+  (`[package].name` in `src-tauri/Cargo.toml`). Set `binaryName` when they
+  differ, or the build fails at the install step with `failed to locate built
+  binary`
+- to add system dependencies, pass `extraNativeBuildInputs` / `extraBuildInputs`
+  (or plain `nativeBuildInputs` / `buildInputs` — both are merged with the
+  Tauri defaults and `pkg-config`)
+- `--features tauri/custom-protocol` is always injected (required for Tauri v2
+  release builds); your `cargoExtraArgs` is appended to it, not substituted
 
 For a more complete example with checks, see [templates/default/flake.nix](./templates/default/flake.nix).
 
@@ -134,10 +145,10 @@ Pick the *closest* common ancestor. Setting `cargoRoot` to the entire repo
 pulls every `Cargo.toml` and `*.rs` in the tree into the build inputs and
 inflates the dependency cache, invalidating it on changes to unrelated crates.
 
-Non-manifest files the app needs at compile time (SQL migrations, fixtures,
-etc.) can be added via `extraFileset`. These are only added to the app build,
-not the dependency build, so they don't invalidate `cargoArtifacts` when they
-change:
+Non-manifest files the app needs at compile time (SQL migrations, JSON
+fixtures, etc.) can be added via `extraFileset`. These are only added to the
+app build, not the dependency build, so they don't invalidate `cargoArtifacts`
+when they change:
 
 ```nix
 tauri = crane-tauri.lib.buildTauriApp { inherit pkgs craneLib; } {
@@ -147,11 +158,18 @@ tauri = crane-tauri.lib.buildTauriApp { inherit pkgs craneLib; } {
   cargoRoot = ./.;
   extraFileset = lib.fileset.unions [
     ./src-tauri/migrations
-    ./deny.toml
   ];
   inherit frontend;
 };
 ```
+
+> **`.toml` files are not candidates for `extraFileset`.** crane's
+> `commonCargoSources` keeps every `.toml` under `cargoRoot` in *both* the app
+> and dependency sources (they commonly configure cargo tooling), so editing
+> one always busts `cargoArtifacts` and passing it through `extraFileset` has no
+> effect. In monorepo mode this means an edit to any `deny.toml`,
+> `rustfmt.toml`, `.cargo/config.toml`, etc. anywhere under `cargoRoot`
+> invalidates the dependency cache.
 
 ### Caveats
 
@@ -163,20 +181,25 @@ tauri = crane-tauri.lib.buildTauriApp { inherit pkgs craneLib; } {
 
 - **`--manifest-path` injection**: monorepo mode adds
   `--manifest-path src-tauri/Cargo.toml` to `commonArgs.cargoExtraArgs` so
-  cargo commands run from `cargoRoot` know which manifest to target. Tools
-  that reject `--manifest-path` (e.g. `cargo-deny`) must override
-  `cargoExtraArgs` when composing on top of `commonArgs`. Use the returned
-  `tauriSubdir` to rebuild a compatible string:
+  cargo commands run from `cargoRoot` know which manifest to target. It is
+  injected at the *top-level* `cargo` position (`cargo … ${cargoExtraArgs}
+  <subcommand>`), which only some subcommands accept. `cargo-deny`, for
+  instance, runs as `cargo deny check` and discovers the manifest from the
+  working directory — the top-level `cargo` rejects both `--features` and
+  `--manifest-path`, so it needs an empty `cargoExtraArgs`:
 
   ```nix
   deny = craneLib.cargoDeny (
     tauri.commonArgs // {
-      cargoExtraArgs = "--features tauri/custom-protocol";
-      # or, if the tool needs the manifest path in a different shape:
-      # cargoExtraArgs = "--manifest-path ${tauri.tauriSubdir}/Cargo.toml";
+      cargoExtraArgs = "";
     }
   );
   ```
+
+  To target a specific crate's manifest in a monorepo, pass it via
+  `cargoDenyExtraArgs` (which lands after the `deny` subcommand), not
+  `cargoExtraArgs`; `tauri.tauriSubdir` gives the tauri crate's path relative to
+  `cargoRoot`.
 
   If a caller passes their own `--manifest-path` via `cargoExtraArgs` to
   `buildTauriApp` (unusual but valid for an exotic layout), injection is

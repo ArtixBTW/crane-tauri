@@ -4,11 +4,10 @@
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixpkgs-unstable";
     crane.url = "github:ipetkov/crane";
-    crane-tauri.url = "github:jphutchins/crane-tauri";
-    crane-tauri.inputs = {
-      nixpkgs.follows = "nixpkgs";
-      crane.follows = "crane";
-    };
+    crane-tauri.url = "github:JPHutchins/crane-tauri";
+    # crane-tauri declares no inputs of its own, so there is nothing to follow;
+    # an empty set silences the "override for a non-existent input" warning.
+    crane-tauri.inputs = { };
     flake-utils.url = "github:numtide/flake-utils";
   };
 
