@@ -255,8 +255,9 @@ let
 
   sharedArgs =
     monorepoCargoLock
-    // lib.optionalAttrs (cfg.cargoLock != null) { cargoLock = cfg.cargoLock; }
     // cfg.craneArgs
+    # The dedicated cargoLock option wins over any cargoLock buried in craneArgs.
+    // lib.optionalAttrs (cfg.cargoLock != null) { cargoLock = cfg.cargoLock; }
     // {
       inherit pname version;
       strictDeps = true;
