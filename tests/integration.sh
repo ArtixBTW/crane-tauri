@@ -65,7 +65,7 @@ test -x "$app_out/bin/tauri-app" || fail "binary not found or not executable"
 pass "fixture binary builds"
 
 echo "=== Test 2: Frontend assets embedded ==="
-grep -qa "vite.svg" "$app_out/bin/tauri-app" || fail "frontend not embedded in binary"
+grep -qaF "vite.svg" "$app_out/bin/tauri-app" || fail "frontend not embedded in binary"
 pass "frontend assets are embedded"
 
 echo "=== Test 3: Frontend builds independently ==="
@@ -193,7 +193,7 @@ capture_verbose "$BUILD1_LOG" nix build "${NIX_BUILD_ARGS[@]}" .#default
 
 consumer_out=$(run_verbose nix path-info .#default)
 test -x "$consumer_out/bin/tauri-app" || fail "consumer binary not found"
-grep -qa "vite.svg" "$consumer_out/bin/tauri-app" || fail "consumer frontend not embedded"
+grep -qaF "vite.svg" "$consumer_out/bin/tauri-app" || fail "consumer frontend not embedded"
 pass "fresh consumer project builds with embedded frontend"
 
 app_out_before="$consumer_out"
@@ -351,11 +351,11 @@ monorepo_out=$(run_verbose nix path-info .#default)
 test -x "$monorepo_out/bin/tauri-app" || fail "monorepo binary not found"
 pass "monorepo build with sibling path-dep produces an executable binary"
 
-grep -qa "MONOREPO_SIBLING_MARKER" "$monorepo_out/bin/tauri-app" \
+grep -qaF "MONOREPO_SIBLING_MARKER" "$monorepo_out/bin/tauri-app" \
   || fail "sibling-crate marker string not found in binary — sibling not linked?"
 pass "sibling-crate compiled and linked into the tauri binary"
 
-grep -qa "EXTRA_FILESET_MARKER" "$monorepo_out/bin/tauri-app" \
+grep -qaF "EXTRA_FILESET_MARKER" "$monorepo_out/bin/tauri-app" \
   || fail "extraFileset file not embedded — migrations/ did not reach the app build?"
 pass "extraFileset file reached the app build (include_str! marker embedded)"
 
@@ -381,7 +381,7 @@ fi
 assert_log_lacks 'tauri-app-deps-0\.1\.0\.drv' "$BUILD5_LOG" "deps derivation not rebuilt after sibling .rs change"
 
 monorepo_out_after_sibling=$(run_verbose nix path-info .#default)
-grep -qa "MONOREPO_SIBLING_MARKER_v2" "$monorepo_out_after_sibling/bin/tauri-app" \
+grep -qaF "MONOREPO_SIBLING_MARKER_v2" "$monorepo_out_after_sibling/bin/tauri-app" \
   || fail "updated sibling marker not found in rebuilt binary"
 pass "rebuilt binary picks up the sibling source edit"
 
@@ -405,7 +405,7 @@ fi
 assert_log_lacks 'tauri-app-deps-0\.1\.0\.drv' "$BUILD6_LOG" "deps derivation not rebuilt after extraFileset content edit"
 
 extrafileset_out=$(run_verbose nix path-info .#default)
-grep -qa "EXTRA_FILESET_MARKER_v2" "$extrafileset_out/bin/tauri-app" \
+grep -qaF "EXTRA_FILESET_MARKER_v2" "$extrafileset_out/bin/tauri-app" \
   || fail "updated extraFileset marker not found in rebuilt binary"
 pass "rebuilt binary picks up the extraFileset content edit"
 
