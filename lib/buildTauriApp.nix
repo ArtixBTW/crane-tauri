@@ -340,28 +340,23 @@ let
   app = craneLib.mkCargoDerivation (
     commonArgs
     // {
+      # see: https://github.com/NixOS/nixpkgs/blob/f13ff45afd1bb73e640eaa08a7066dbed07e3238/pkgs/by-name/ca/cargo-tauri/hook.nix
+
       cargoArtifacts = resolvedCargoArtifacts;
       TAURI_CONFIG = tauriConfig;
+      targetDir = "target/release";
 
       nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.cargo-tauri ];
 
-      buildPhaseCargoCommand = ''
-        cargo tauri build --no-bundle \
-          ${tauriBuildCargoExtraArgs} \
-          --config "$TAURI_CONFIG"
-      '';
+      buildPhaseCargoCommand =
+        # bash
+        ''
+          cargo tauri build -b ${pkgs.cargo-tauri.hook.defaultTauriBundleType} \
+            ${tauriBuildCargoExtraArgs} \
+            --config "$TAURI_CONFIG"
+        '';
 
-      installPhaseCommand = ''
-        binaryPath=$(find target -type f -path ${lib.escapeShellArg "*/release/${binaryName}"} -print -quit)
-
-        if [ -z "$binaryPath" ]; then
-          echo "failed to locate built binary ${binaryName}" >&2
-          exit 1
-        fi
-
-        mkdir -p $out/bin
-        cp "$binaryPath" $out/bin/
-      '';
+      installPhaseCommand = pkgs.cargo-tauri.hook.installScript;
 
       doInstallCargoArtifacts = false;
     }
