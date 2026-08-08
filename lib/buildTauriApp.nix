@@ -19,7 +19,7 @@ let
       options = {
         pname = mkOption {
           type = types.str;
-          description = "Nix package name (and default binaryName).";
+          description = "Nix package name.";
         };
         version = mkOption {
           type = types.str;
@@ -32,17 +32,6 @@ let
         frontend = mkOption {
           type = types.package;
           description = "Built frontend assets derivation, embedded into the app.";
-        };
-        binaryName = mkOption {
-          type = types.str;
-          default = config.pname;
-          defaultText = lib.literalExpression "pname";
-          description = ''
-            Cargo binary name to install from target/release. Defaults to pname,
-            but the on-disk binary is named by cargo ([package].name in
-            src-tauri/Cargo.toml); set this when they differ, or the install
-            phase fails late with "failed to locate built binary".
-          '';
         };
         cargoExtraArgs = mkOption {
           type = types.str;
@@ -132,7 +121,6 @@ let
     version
     src
     frontend
-    binaryName
     cargoExtraArgs
     cargoArtifacts
     extraBuildInputs
