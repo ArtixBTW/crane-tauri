@@ -344,7 +344,18 @@ let
             --config "$TAURI_CONFIG"
         '';
 
-      installPhaseCommand = pkgs.cargo-tauri.hook.installScript;
+      installPhaseCommand =
+        lib.optionalString pkgs.stdenv.hostPlatform.isDarwin
+          # Needing to install binaries when there's already a .app
+          # especially for something with a GUI feels wrong to me.
+          # But I don't know anything about MacOS so maybe I'm wrong
+
+          # bash
+          ''
+            mkdir -p "$out/bin"
+            find "$targetDir" -maxdepth 1 -type f -executable -print0 | xargs -0 cp --target-directory="$out/bin"
+          ''
+        + pkgs.cargo-tauri.hook.installScript;
 
       doInstallCargoArtifacts = false;
     }
