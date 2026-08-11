@@ -336,6 +336,10 @@ let
 
       nativeBuildInputs = commonArgs.nativeBuildInputs ++ [ pkgs.cargo-tauri ];
 
+      preFixup =
+        (lib.optionalString (commonArgs.preFixup != null && commonArgs.preFixup != "") "${commonArgs.preFixup}\n")
+        + pkgs.cargo-tauri.hook.fixupScript;
+
       buildPhaseCargoCommand =
         # bash
         ''
